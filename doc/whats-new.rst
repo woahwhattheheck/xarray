@@ -223,6 +223,8 @@ Deprecations
 
 Bug Fixes
 ~~~~~~~~~
+- Weighted quantiles now avoid arithmetic overflow and underflow when
+  calculating effective sample size from very large or small weights.
 - Weighted variance, standard deviation and sums of squared deviations now
   use conjugated deviations for complex data, matching unweighted reductions
   and correcting weighted self-correlation.
