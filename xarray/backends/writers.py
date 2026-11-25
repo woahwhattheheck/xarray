@@ -959,6 +959,9 @@ def _datatree_to_zarr(
         write_empty_chunks=write_empty_chunks,
     )
 
+    # Children inherit this flag. Consolidate after all node metadata is written.
+    consolidate_on_close = root_store._consolidate_on_close
+    root_store._consolidate_on_close = False
     writer = ArrayWriter()
 
     try:
@@ -979,10 +982,13 @@ def _datatree_to_zarr(
                 writer,
                 encoding=encoding.get(node.path),
             )
+        if consolidate_on_close:
+            root_store.consolidate_metadata()
         writes = writer.sync(
             compute=compute, chunkmanager_store_kwargs=chunkmanager_store_kwargs
         )
     finally:
+        root_store._consolidate_on_close = consolidate_on_close
         if compute:
             root_store.close()
 

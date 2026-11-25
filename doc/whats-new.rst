@@ -223,6 +223,8 @@ Deprecations
 
 Bug Fixes
 ~~~~~~~~~
+- :py:meth:`DataTree.to_zarr` now consolidates metadata once after writing
+  the metadata for all nodes (:issue:`9455`).
 - Weighted variance, standard deviation and sums of squared deviations now
   use conjugated deviations for complex data, matching unweighted reductions
   and correcting weighted self-correlation.

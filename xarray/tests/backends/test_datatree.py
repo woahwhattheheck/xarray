@@ -6,6 +6,7 @@ import sys
 from collections.abc import Callable, Generator, Hashable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -825,6 +826,33 @@ class TestZarrDatatreeIO:
 
         with open_datatree(store, engine="zarr") as roundtrip_dt:  # type: ignore[arg-type, unused-ignore]
             assert_equal(original_dt, roundtrip_dt)
+
+    @pytest.mark.parametrize(
+        "consolidated, expected_calls", [(None, 1), (True, 1), (False, 0)]
+    )
+    def test_to_zarr_consolidates_once(
+        self,
+        tmp_path: Path,
+        simple_datatree: DataTree,
+        zarr_format: Literal[2, 3],
+        consolidated: bool | None,
+        expected_calls: int,
+    ) -> None:
+        import zarr
+
+        store = tmp_path / "tree.zarr"
+        with patch.object(
+            zarr, "consolidate_metadata", wraps=zarr.consolidate_metadata
+        ) as consolidate:
+            simple_datatree.to_zarr(
+                store, zarr_format=zarr_format, consolidated=consolidated
+            )
+        assert consolidate.call_count == expected_calls
+
+        with open_datatree(
+            store, engine="zarr", consolidated=consolidated is not False
+        ) as actual:
+            assert_identical(actual, simple_datatree)
 
     def test_to_zarr_not_consolidated(
         self, tmpdir, simple_datatree, zarr_format

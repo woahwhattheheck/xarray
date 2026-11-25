@@ -4,7 +4,7 @@ import base64
 import json
 import os
 import struct
-from collections.abc import Hashable, Iterable, Mapping
+from collections.abc import Collection, Hashable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Literal, Self, cast, override
 
 import numpy as np
@@ -44,6 +44,7 @@ from xarray.namedarray.pycompat import integer_types
 if TYPE_CHECKING:
     from zarr import AsyncArray
 
+    from xarray.backends.common import ArrayWriter
     from xarray.coders import CFDatetimeCoder, CFTimedeltaCoder
     from xarray.core.dataset import Dataset
     from xarray.core.datatree import DataTree
@@ -1063,12 +1064,12 @@ class ZarrStore(AbstractWritableDataStore):
     @override
     def store(
         self,
-        variables,
-        attributes,
-        check_encoding_set=frozenset(),
-        writer=None,
-        unlimited_dims=None,
-    ):
+        variables: dict[Hashable, Variable],
+        attributes: dict[str, Any],
+        check_encoding_set: Collection[Hashable] = frozenset(),
+        writer: ArrayWriter | None = None,
+        unlimited_dims: Iterable[Hashable] | None = None,
+    ) -> None:
         """Put data on this store.
 
         This top level method:
@@ -1092,11 +1093,6 @@ class ZarrStore(AbstractWritableDataStore):
             dimension on which the zarray will be appended
             only needed in append mode
         """
-        if TYPE_CHECKING:
-            import zarr
-        else:
-            zarr = attempt_import("zarr")
-
         if self._mode == "w":
             # always overwrite, so we don't care about existing names,
             # and consistency of encoding
@@ -1191,10 +1187,15 @@ class ZarrStore(AbstractWritableDataStore):
             variables_to_set, check_encoding_set, writer, unlimited_dims=unlimited_dims
         )
         if self._consolidate_on_close:
-            zarr.consolidate_metadata(
-                self.zarr_group.store,
-                zarr_format=self.zarr_group.metadata.zarr_format,
-            )
+            self.consolidate_metadata()
+
+    def consolidate_metadata(self) -> None:
+        import zarr
+
+        zarr.consolidate_metadata(
+            self.zarr_group.store,
+            zarr_format=self.zarr_group.metadata.zarr_format,
+        )
 
     def _open_existing_array(self, *, name) -> ZarrArray:
         import zarr
