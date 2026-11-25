@@ -1607,6 +1607,65 @@ def test_map_blocks_hlg_layers():
     xr.testing.assert_equal(mapped, ds)
 
 
+def test_map_blocks_callable_identity() -> None:
+    def factory(offset: int) -> Any:
+        return lambda block: block + offset
+
+    source = xr.DataArray(da.arange(8, chunks=4), dims="x", name="a")
+    first = source.map_blocks(factory(1), template=source)
+    second = source.map_blocks(factory(2), template=source)
+
+    actual_first, actual_second = dask.compute(first, second)
+    assert_equal(actual_first, source.compute() + 1)
+    assert_equal(actual_second, source.compute() + 2)
+
+
+def test_map_blocks_template_identity() -> None:
+    source = xr.DataArray(
+        da.arange(8, chunks=4), dims="x", coords={"x": np.arange(8)}, name="a"
+    )
+
+    def identity(block: xr.DataArray) -> xr.DataArray:
+        return block
+
+    first = source.map_blocks(identity, template=source)
+    second = source.map_blocks(identity, template=source.assign_coords(x=source.x + 1))
+    assert first.data.name != second.data.name
+
+
+@requires_scipy_or_netCDF4
+def test_map_blocks_collect_chunked_data_preserves_backend() -> None:
+    from xarray.core.dask_array_expr import collect_dask_array_expr_chunked_data
+
+    source = xr.Dataset({"a": ("x", np.arange(8))})
+    chunked = source.chunk({"x": 4})
+    with create_tmp_file(allow_cleanup_failure=ON_WINDOWS) as tmp_file:
+        source.to_netcdf(tmp_file)
+        with xr.open_dataset(tmp_file) as read:
+            assert not read["a"].variable._in_memory
+            _, arrays = collect_dask_array_expr_chunked_data((chunked, read))
+            assert not read["a"].variable._in_memory
+            assert len(arrays) == 1
+            assert arrays[0] is chunked["a"].data
+            assert_equal(read, source)
+
+
+@requires_scipy_or_netCDF4
+def test_map_blocks_template_data_stays_lazy() -> None:
+    source = xr.Dataset({"a": ("x", np.arange(8)), "b": ("x", 2 * np.arange(8))}).chunk(
+        {"x": 4}
+    )
+    with create_tmp_file(allow_cleanup_failure=ON_WINDOWS) as tmp_file:
+        source[["b"]].to_netcdf(tmp_file)
+        with xr.open_dataset(tmp_file) as read:
+            template = source[["a"]].copy()
+            template["b"] = read["b"].variable
+            assert not template["b"].variable._in_memory
+            result = source.map_blocks(lambda block: block, template=template)
+            assert not template["b"].variable._in_memory
+            assert_equal(result.compute(), source.compute())
+
+
 def test_make_meta(map_ds):
     from xarray.core.parallel import make_meta
 

@@ -547,7 +547,21 @@ def map_blocks(
     new_layers: collections.defaultdict[str, dict[Any, Any]] = collections.defaultdict(
         dict
     )
-    gname = f"{dask.utils.funcname(func)}-{dask.base.tokenize(npargs[0], args, kwargs)}"
+    # Hash the output contract rather than template data, which may be backed by
+    # a lazy storage array. Only new or modified indexes are checked by _wrapper.
+    output_contract = (
+        {name: (var.dims, var.dtype) for name, var in template.variables.items()},
+        template.sizes,
+        template._coord_names,
+        output_chunks,
+        {name: coordinates.xindexes[name] for name in new_indexes | modified_indexes},
+    )
+    # Different closures can have the same display name but produce different
+    # block results. Include the callable and input-kind flags in task identity.
+    gname = (
+        f"{dask.utils.funcname(func)}-"
+        f"{tokenize(func, npargs, kwargs, is_array, output_contract)}"
+    )
 
     # map dims to list of chunk indexes
     ichunk = {dim: range(len(chunks_v)) for dim, chunks_v in input_chunks.items()}
@@ -566,10 +580,6 @@ def map_blocks(
     if has_dask_array_expr:
         from xarray.core.dask_array_expr import map_blocks_with_dask_array_expr
 
-        dask_array_token = (
-            f"{dask.utils.funcname(func)}-"
-            f"{dask.base.tokenize(func, npargs[0], args, kwargs)}"
-        )
         return map_blocks_with_dask_array_expr(
             func=func,
             npargs=npargs,
@@ -582,7 +592,7 @@ def map_blocks(
             template=template,
             result_is_array=result_is_array,
             template_name=template_name,
-            token=dask_array_token,
+            token=gname,
             ichunk=ichunk,
             input_chunk_bounds=input_chunk_bounds,
             output_chunk_bounds=output_chunk_bounds,

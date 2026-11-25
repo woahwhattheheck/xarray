@@ -223,6 +223,8 @@ Deprecations
 
 Bug Fixes
 ~~~~~~~~~
+- :py:func:`map_blocks` distinguishes different callables and templates when
+  creating Dask tasks and avoids loading disk-backed data to determine task keys.
 - Weighted variance, standard deviation and sums of squared deviations now
   use conjugated deviations for complex data, matching unweighted reductions
   and correcting weighted self-correlation.
