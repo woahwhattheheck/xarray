@@ -4,7 +4,7 @@ import base64
 import json
 import os
 import struct
-from collections.abc import Hashable, Iterable, Mapping
+from collections.abc import Collection, Hashable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Literal, Self, cast, override
 
 import numpy as np
@@ -44,6 +44,7 @@ from xarray.namedarray.pycompat import integer_types
 if TYPE_CHECKING:
     from zarr import AsyncArray
 
+    from xarray.backends.common import ArrayWriter
     from xarray.coders import CFDatetimeCoder, CFTimedeltaCoder
     from xarray.core.dataset import Dataset
     from xarray.core.datatree import DataTree
@@ -1271,10 +1272,10 @@ class ZarrStore(AbstractWritableDataStore):
     def set_variables(
         self,
         variables: dict[str, Variable],
-        check_encoding_set,
-        writer,
-        unlimited_dims=None,
-    ):
+        check_encoding_set: Collection[Hashable],
+        writer: ArrayWriter,
+        unlimited_dims: Iterable[Hashable] | None = None,
+    ) -> None:
         """Set the variables on the data store.
 
         This provides a centralized method to set the variables on the data
@@ -1365,11 +1366,42 @@ class ZarrStore(AbstractWritableDataStore):
                 zarr_shape = zarr_array.shape
             region = tuple(write_region[dim] for dim in dims)
 
+            new_variable = self._mode == "w" or name not in existing_keys
+            effective_write_chunks = encoding.get("shards") or encoding["chunks"]
+            resolve_auto_shards = (
+                new_variable
+                and encoding.get("shards") == "auto"
+                and v.chunks is not None
+                and (self._safe_chunks or self._align_chunks)
+            )
+
+            if new_variable:
+                # new variable
+                encoded_attrs = {k: self.encode_attribute(v) for k, v in attrs.items()}
+                # the magic for storing the hidden dimension data
+                if is_zarr_v3_format:
+                    encoding["dimension_names"] = dims
+                else:
+                    encoded_attrs[DIMENSION_KEY] = dims
+
+                encoding["overwrite"] = self._mode == "w"
+
+            if resolve_auto_shards:
+                # Automatic shard shapes are chosen by Zarr when the array is
+                # created. Create only its metadata before validating the write.
+                zarr_array = self._create_new_array(
+                    name=name,
+                    dtype=dtype,
+                    shape=shape,
+                    fill_value=fill_value,
+                    encoding=encoding,
+                    attrs=encoded_attrs,
+                )
+                effective_write_chunks = zarr_array.shards or zarr_array.chunks
+
             # When shards are specified, dask chunks must align with shard boundaries
             # (not just zarr chunk boundaries) to avoid data corruption during
             # parallel writes. See https://github.com/pydata/xarray/issues/10831
-            effective_write_chunks = encoding.get("shards") or encoding["chunks"]
-
             if self._align_chunks and isinstance(effective_write_chunks, tuple):
                 v = grid_rechunk(
                     v=v,
@@ -1398,17 +1430,7 @@ class ZarrStore(AbstractWritableDataStore):
                     backend_shape=shape,
                 )
 
-            if self._mode == "w" or name not in existing_keys:
-                # new variable
-                encoded_attrs = {k: self.encode_attribute(v) for k, v in attrs.items()}
-                # the magic for storing the hidden dimension data
-                if is_zarr_v3_format:
-                    encoding["dimension_names"] = dims
-                else:
-                    encoded_attrs[DIMENSION_KEY] = dims
-
-                encoding["overwrite"] = self._mode == "w"
-
+            if new_variable and not resolve_auto_shards:
                 zarr_array = self._create_new_array(
                     name=name,
                     dtype=dtype,

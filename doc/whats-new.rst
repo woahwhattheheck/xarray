@@ -223,6 +223,9 @@ Deprecations
 
 Bug Fixes
 ~~~~~~~~~
+- Zarr writes with ``shards="auto"`` now validate and align Dask chunks
+  against the resolved shard shape, preventing overlapping concurrent writes
+  (:issue:`11674`).
 - Weighted variance, standard deviation and sums of squared deviations now
   use conjugated deviations for complex data, matching unweighted reductions
   and correcting weighted self-correlation.
