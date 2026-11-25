@@ -8,6 +8,7 @@ import re
 import tempfile
 import uuid
 import warnings
+import zipfile
 from collections import ChainMap
 from collections.abc import Iterator, Mapping
 from importlib import import_module
@@ -2734,6 +2735,31 @@ class TestNCZarr:
                 KeyError, match="missing the attribute `_ARRAY_DIMENSIONS`,"
             ):
                 ds.to_zarr(tmp, mode=mode)
+
+
+@requires_zarr
+@parametrize_zarr_format
+@pytest.mark.filterwarnings("error:Duplicate name")
+def test_zarr_zip_store_has_unique_metadata(
+    tmp_path: Path, zarr_format: Literal[2, 3]
+) -> None:
+    from zarr.storage import ZipStore
+
+    expected = xr.Dataset(
+        {"a": ("x", [1, 2], {"units": "m"})},
+        coords={"aux": ("y", ["a", "b"])},
+        attrs={"title": "observations"},
+    )
+    path = tmp_path / "observations.zarr.zip"
+
+    with ZipStore(path, mode="w") as store:
+        expected.to_zarr(store, consolidated=False, zarr_format=zarr_format)
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        assert len(names) == len(set(names))
+    with ZipStore(path, mode="r") as store:
+        with xr.open_zarr(store, chunks=None, consolidated=False) as actual:
+            assert_identical(actual, expected)
 
 
 @requires_zarr

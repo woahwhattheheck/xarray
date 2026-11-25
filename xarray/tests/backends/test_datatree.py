@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import re
 import sys
+import zipfile
 from collections.abc import Callable, Generator, Hashable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
@@ -825,6 +826,32 @@ class TestZarrDatatreeIO:
 
         with open_datatree(store, engine="zarr") as roundtrip_dt:  # type: ignore[arg-type, unused-ignore]
             assert_equal(original_dt, roundtrip_dt)
+
+    @pytest.mark.filterwarnings("error:Duplicate name")
+    def test_to_zarr_zip_store_has_unique_metadata(
+        self, tmp_path: Path, zarr_format: Literal[2, 3]
+    ) -> None:
+        from zarr.storage import ZipStore
+
+        expected = DataTree.from_dict(
+            {
+                "/": xr.Dataset(attrs={"title": "root"}),
+                "/child": xr.Dataset(
+                    {"a": ("x", [1, 2], {"units": "m"})},
+                    attrs={"title": "child"},
+                ),
+            }
+        )
+        path = tmp_path / "tree.zarr.zip"
+
+        with ZipStore(path, mode="w") as store:
+            expected.to_zarr(store, consolidated=False, zarr_format=zarr_format)
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            assert len(names) == len(set(names))
+        with ZipStore(path, mode="r") as store:
+            with open_datatree(store, engine="zarr", consolidated=False) as actual:
+                assert_identical(actual, expected)
 
     def test_to_zarr_not_consolidated(
         self, tmpdir, simple_datatree, zarr_format

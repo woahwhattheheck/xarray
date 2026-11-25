@@ -223,6 +223,9 @@ Deprecations
 
 Bug Fixes
 ~~~~~~~~~
+- New Zarr arrays and groups receive attributes when created, avoiding
+  duplicate metadata entries in unconsolidated ``zarr.storage.ZipStore``
+  writes (:issue:`10827`).
 - Weighted variance, standard deviation and sums of squared deviations now
   use conjugated deviations for complex data, matching unweighted reductions
   and correcting weighted self-correlation.

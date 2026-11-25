@@ -707,13 +707,30 @@ def _validate_and_transpose_existing_dims(
     return new_var
 
 
-def _put_attrs(zarr_obj, attrs):
-    """Raise a more informative error message for invalid attrs."""
+def _validate_zarr_attrs(attrs: Mapping[str, Any]) -> None:
+    """Check attributes before creating their array or group metadata."""
     try:
-        zarr_obj.attrs.put(attrs)
+        json.dumps(attrs)
     except TypeError as e:
         raise TypeError("Invalid attribute in Dataset.attrs.") from e
-    return zarr_obj
+
+
+def _put_attrs(zarr_obj: ZarrGroup, attrs: dict[str, Any]) -> None:
+    """Raise a more informative error message for invalid attrs."""
+    try:
+        # Attribute updates rewrite the complete metadata document in Zarr 3.
+        # Avoid a second write when these attributes were supplied at creation,
+        # including on stores such as ZipStore which cannot replace a key.
+        # Round-trip first so JSON-coercible mapping keys and tuple values
+        # compare as stored; sorting then ignores mapping insertion order.
+        current = json.dumps(
+            json.loads(json.dumps(zarr_obj.attrs.asdict())), sort_keys=True
+        )
+        updated = json.dumps(json.loads(json.dumps(attrs)), sort_keys=True)
+        if current != updated:
+            zarr_obj.attrs.put(attrs)
+    except TypeError as e:
+        raise TypeError("Invalid attribute in Dataset.attrs.") from e
 
 
 class ZarrStore(AbstractWritableDataStore):
@@ -802,21 +819,24 @@ class ZarrStore(AbstractWritableDataStore):
     @classmethod
     def open_group(
         cls,
-        store,
+        store: ZarrStoreLike | None,
         mode: ZarrWriteModes = "r",
-        group=None,
-        consolidated=False,
-        consolidate_on_close=False,
-        storage_options=None,
-        append_dim=None,
-        write_region=None,
-        safe_chunks=True,
-        align_chunks=False,
-        zarr_format=None,
-        use_zarr_fill_value_as_mask=None,
+        group: str | None = None,
+        consolidated: bool | None = False,
+        consolidate_on_close: bool = False,
+        storage_options: dict[str, Any] | None = None,
+        append_dim: Hashable | None = None,
+        write_region: (
+            Mapping[str, slice | Literal["auto"]] | Literal["auto"] | None
+        ) = None,
+        safe_chunks: bool = True,
+        align_chunks: bool = False,
+        zarr_format: int | None = None,
+        use_zarr_fill_value_as_mask: bool | None = None,
         write_empty: bool | None = None,
         cache_members: bool = True,
-    ):
+        attributes: dict[str, Any] | None = None,
+    ) -> Self:
         (
             zarr_group,
             consolidate_on_close,
@@ -831,6 +851,7 @@ class ZarrStore(AbstractWritableDataStore):
             storage_options=storage_options,
             use_zarr_fill_value_as_mask=use_zarr_fill_value_as_mask,
             zarr_format=zarr_format,
+            attributes=attributes,
         )
 
         return cls(
@@ -893,8 +914,23 @@ class ZarrStore(AbstractWritableDataStore):
             self._members = self._fetch_members()
 
     @override
-    def get_child_store(self, group: str) -> Self:
-        zarr_group = self.zarr_group.require_group(group)
+    def get_child_store(
+        self, group: str, *, attributes: dict[str, Any] | None = None
+    ) -> Self:
+        if attributes is None:
+            zarr_group = self.zarr_group.require_group(group)
+        else:
+            from zarr import Group
+
+            try:
+                zarr_group = self.zarr_group[group]
+            except KeyError:
+                zarr_group = self.zarr_group.create_group(group, attributes=attributes)
+            else:
+                if not isinstance(zarr_group, Group):
+                    raise TypeError(
+                        f"Incompatible object ({type(zarr_group).__name__}) already exists"
+                    )
         return type(self)(
             zarr_group=zarr_group,
             mode=self._mode,
@@ -1231,8 +1267,16 @@ class ZarrStore(AbstractWritableDataStore):
         return cast(ZarrArray, zarr_array)
 
     def _create_new_array(
-        self, *, name, shape, dtype, fill_value, encoding, attrs
+        self,
+        *,
+        name: str,
+        shape: tuple[int, ...],
+        dtype: np.dtype | type[str],
+        fill_value: Any,
+        encoding: dict[str, Any],
+        attrs: dict[str, Any],
     ) -> ZarrArray:
+        _validate_zarr_attrs(attrs)
         if coding.strings.check_vlen_dtype(dtype) is str:
             dtype = str
 
@@ -1262,9 +1306,9 @@ class ZarrStore(AbstractWritableDataStore):
             shape=shape,
             dtype=dtype,
             fill_value=fill_value,
+            attributes=attrs,
             **encoding,
         )
-        zarr_array = _put_attrs(zarr_array, attrs)
         return zarr_array
 
     @override
@@ -1927,15 +1971,16 @@ def _iter_zarr_groups(root: ZarrGroup, parent: str = "/") -> Iterable[str]:
 
 
 def _get_open_params(
-    store,
-    mode,
-    group,
-    consolidated,
-    consolidate_on_close,
-    storage_options,
-    use_zarr_fill_value_as_mask,
-    zarr_format,
-):
+    store: ZarrStoreLike | None,
+    mode: ZarrWriteModes,
+    group: str | None,
+    consolidated: bool | None,
+    consolidate_on_close: bool,
+    storage_options: dict[str, Any] | None,
+    use_zarr_fill_value_as_mask: bool | None,
+    zarr_format: int | None,
+    attributes: dict[str, Any] | None = None,
+) -> tuple[ZarrGroup, bool, bool, bool]:
     if TYPE_CHECKING:
         import zarr
     else:
@@ -1945,7 +1990,7 @@ def _get_open_params(
     if isinstance(store, os.PathLike):
         store = os.fspath(store)
 
-    open_kwargs = dict(
+    open_kwargs: dict[str, Any] = dict(
         # mode='a-' is a handcrafted xarray specialty
         mode="a" if mode == "a-" else mode,
         path=group,
@@ -2002,6 +2047,10 @@ def _get_open_params(
         # we have determined that we don't want to use consolidated metadata
         # so we set that to False to avoid trying to read it
         open_kwargs["use_consolidated"] = False
+        if mode not in ("r", "r+") and attributes is not None:
+            # Zarr uses these only if it creates the group. Existing groups
+            # still have their attributes updated by set_attributes().
+            open_kwargs["attributes"] = attributes
         zarr_group = zarr.open_group(store, **open_kwargs)
 
     close_store_on_close = zarr_group.store is not store
